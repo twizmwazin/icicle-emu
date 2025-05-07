@@ -618,6 +618,21 @@ impl Vm {
         Ok(group)
     }
 
+    pub fn get_isa_mode(&self) -> u8 {
+        self.cpu.isa_mode()
+    }
+
+    pub fn set_isa_mode(&mut self, isa_mode: u8) {
+        tracing::debug!("ISA mode change {} -> {isa_mode}", self.prev_isa_mode);
+        self.jit.clear_fast_lookup();
+        self.cpu.set_isa_mode(isa_mode);
+        self.prev_isa_mode = isa_mode;
+        match self.cpu.arch.isa_mode_context.get(isa_mode as usize) {
+            Some(ctx) => self.lifter.set_context(*ctx),
+            None => self.invalid_isa_mode(),
+        }
+    }
+
     fn update_context(&mut self) {
         // Use the context from the last block.
         if let Some(block) = self.code.blocks.get(self.cpu.block_id as usize) {
@@ -627,13 +642,7 @@ impl Vm {
         // Check for ISA mode changes.
         let isa_mode = self.cpu.isa_mode();
         if self.prev_isa_mode != isa_mode {
-            tracing::debug!("ISA mode change {} -> {isa_mode}", self.prev_isa_mode);
-            self.jit.clear_fast_lookup();
-            self.prev_isa_mode = isa_mode;
-            match self.cpu.arch.isa_mode_context.get(isa_mode as usize) {
-                Some(ctx) => self.lifter.set_context(*ctx),
-                None => self.invalid_isa_mode(),
-            }
+            self.set_isa_mode(self.cpu.isa_mode());
         }
     }
 

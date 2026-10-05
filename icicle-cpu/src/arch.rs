@@ -148,7 +148,7 @@ impl Arch {
         let mut buf = [0; 8];
         buf[..size].copy_from_slice(&bytes[..size]);
 
-        match self.triple.endianness().unwrap() {
+        match self.encoding.endianness {
             target_lexicon::Endianness::Little => u64::from_le_bytes(buf),
             target_lexicon::Endianness::Big => u64::from_be_bytes(buf),
         }

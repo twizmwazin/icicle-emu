@@ -130,6 +130,59 @@ impl SleighLanguageBuilder {
     }
 }
 
+/// Searches the Ghidra processors directory (e.g. `$GHIDRA_SRC/Ghidra/Processors`) for the language
+/// definition file that defines a language with an id exactly matching `lang_id` (e.g.
+/// `ARM:LE:32:v8`).
+///
+/// Returns the path to the `.ldefs` file along with the description of the matching language.
+pub fn find_language(processors: &Path, lang_id: &str) -> Result<(PathBuf, LanguageDesc), Error> {
+    let read_dir = |path: &Path| -> Result<Vec<PathBuf>, Error> {
+        let mut entries: Vec<_> = std::fs::read_dir(path)
+            .map_err(|err| Error::Io(path.into(), err))?
+            .filter_map(|entry| Some(entry.ok()?.path()))
+            .collect();
+        // Sort entries to ensure that the search order is deterministic.
+        entries.sort();
+        Ok(entries)
+    };
+
+    // If we fail to parse a language definition that might contain the language, we keep searching
+    // but report the error if the language is not found elsewhere.
+    let mut parse_error = None;
+
+    for processor in read_dir(processors)? {
+        let languages = processor.join("data/languages");
+        if !languages.is_dir() {
+            continue;
+        }
+        for ldef_path in read_dir(&languages)? {
+            if ldef_path.extension().is_none_or(|ext| ext != "ldefs") {
+                continue;
+            }
+
+            let contents = std::fs::read_to_string(&ldef_path)
+                .map_err(|err| Error::Io(ldef_path.clone(), err))?;
+            // Avoid parsing language definitions that cannot contain the language.
+            if !contents.contains(lang_id) {
+                continue;
+            }
+
+            let ldef: LanguageDef = match serde_xml_rs::from_str(&contents) {
+                Ok(ldef) => ldef,
+                Err(err) => {
+                    parse_error.get_or_insert(Error::ParseError(ldef_path, err.to_string()));
+                    continue;
+                }
+            };
+            if let Some(lang) = ldef.language.into_iter().find(|lang| lang.id == lang_id) {
+                return Ok((ldef_path, lang));
+            }
+        }
+    }
+
+    Err(parse_error.unwrap_or_else(|| Error::LanguageNotFound(lang_id.into())))
+}
+
 fn build_inner(
     SleighLanguageBuilder { ldef_path, lang_id, cspec_id, verbose, defines }: SleighLanguageBuilder,
 ) -> Result<SleighLanguage, Error> {

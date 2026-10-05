@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use icicle_cpu::{Arch, Config, Cpu, cpu::CallCov, exec::helpers, lifter};
-use sleigh_compile::ldef::SleighLanguage;
+use sleigh_compile::ldef::{LanguageDesc, SleighLanguage};
 
 use crate::Vm;
 
@@ -9,6 +9,7 @@ use crate::Vm;
 pub enum BuildError {
     UnsupportedArchitecture,
     SpecNotFound(std::path::PathBuf),
+    LanguageNotFound(String),
     SpecCompileError(String),
     FailedToParsePspec(String),
     FailedToInitEnvironment(String),
@@ -22,6 +23,7 @@ impl std::fmt::Display for BuildError {
         match self {
             Self::UnsupportedArchitecture => write!(f, "Unsupported architecture"),
             Self::SpecNotFound(path) => write!(f, "Sleigh spec not found: {}", path.display()),
+            Self::LanguageNotFound(id) => write!(f, "Sleigh language not found: {id}"),
             Self::SpecCompileError(err) => write!(f, "Sleigh spec compile error: {err}"),
             Self::FailedToParsePspec(err) => write!(f, "Failed to parse pspec file: {err}"),
             Self::FailedToInitEnvironment(err) => {
@@ -43,7 +45,21 @@ pub fn build(config: &Config) -> Result<Vm, BuildError> {
 }
 
 pub fn build_with_path(config: &Config, processors: &Path) -> Result<Vm, BuildError> {
-    let mut lang = sleigh_init_with_path(&config.triple, processors)?;
+    let (triple, mut lang) = match config.language_id.as_deref() {
+        Some(lang_id) => {
+            let (ldef_path, desc) = find_language(lang_id, processors)?;
+            // Prefer the user provided triple, otherwise infer it from the language.
+            let triple = match config.triple.architecture {
+                target_lexicon::Architecture::Unknown => {
+                    triple_for_language(&desc).unwrap_or_else(target_lexicon::Triple::unknown)
+                }
+                _ => config.triple.clone(),
+            };
+            let lang = compile_language(ldef_path, lang_id, triple.architecture)?;
+            (triple, lang)
+        }
+        None => (config.triple.clone(), sleigh_init_with_path(&config.triple, processors)?),
+    };
 
     let reg_next_pc = lang
         .sleigh
@@ -62,7 +78,7 @@ pub fn build_with_path(config: &Config, processors: &Path) -> Result<Vm, BuildEr
     //
     // @todo: Support other architectures.
     // @todo: Determine resolve using ldef if possible.
-    let isa_mode_context = match config.triple.architecture {
+    let isa_mode_context = match triple.architecture {
         target_lexicon::Architecture::Arm(inner) => match inner.is_thumb() {
             true => vec![lang.initial_ctx],
             false => vec![arm::ARM_MODE_CTX, arm::THUMB_MODE_CTX],
@@ -73,17 +89,18 @@ pub fn build_with_path(config: &Config, processors: &Path) -> Result<Vm, BuildEr
     let get_reg = |name: &str| lang.sleigh.get_varnode(name).ok_or(BuildError::InvalidConfig);
 
     let mut reg_init = vec![];
-    for &(name, value) in get_boot_values(config.triple.architecture) {
+    for &(name, value) in get_boot_values(triple.architecture) {
         reg_init.push((get_reg(name)?, value));
     }
 
-    let temporaries = get_temporary_varnodes(config.triple.architecture)
+    let temporaries = get_temporary_varnodes(triple.architecture)
         .iter()
         .map(|name| Ok(get_reg(name)?.id))
         .collect::<Result<Vec<_>, _>>()?;
 
+    let on_boot = get_boot_action(triple.architecture);
     let arch = Arch {
-        triple: config.triple.clone(),
+        triple,
         reg_pc: lang.pc,
         reg_next_pc,
         reg_sp: lang.sp,
@@ -96,7 +113,7 @@ pub fn build_with_path(config: &Config, processors: &Path) -> Result<Vm, BuildEr
             stack_align: 4,
             stack_offset: 0,
         },
-        on_boot: get_boot_action(config.triple.architecture),
+        on_boot,
         sleigh: lang.sleigh,
     };
 
@@ -121,7 +138,8 @@ fn build_vm(config: &Config, arch: Arch) -> Result<Vm, BuildError> {
 
     let mut vm = Vm::new(cpu, lifter);
     vm.enable_jit = config.enable_jit;
-    register_helpers_for(&mut vm, config.triple.architecture);
+    let arch = vm.cpu.arch.triple.architecture;
+    register_helpers_for(&mut vm, arch);
 
     Ok(vm)
 }
@@ -346,13 +364,127 @@ pub fn sleigh_init_with_path(
         return Err(BuildError::SpecNotFound(ldef_path));
     }
 
-    let mut builder = sleigh_compile::SleighLanguageBuilder::new(ldef_path, id);
-    if matches!(target.architecture, Architecture::Msp430) {
+    compile_language(ldef_path, id, target.architecture)
+}
+
+/// Compile the SLEIGH specification for the language with the id `lang_id` (e.g. `ARM:LE:32:v8`).
+pub fn sleigh_init_for_language(lang_id: &str) -> Result<SleighLanguage, BuildError> {
+    sleigh_init_for_language_with_path(lang_id, &get_default_processors_path())
+}
+
+pub fn sleigh_init_for_language_with_path(
+    lang_id: &str,
+    processors: &Path,
+) -> Result<SleighLanguage, BuildError> {
+    let (ldef_path, desc) = find_language(lang_id, processors)?;
+    let arch = triple_for_language(&desc)
+        .map_or(target_lexicon::Architecture::Unknown, |triple| triple.architecture);
+    compile_language(ldef_path, lang_id, arch)
+}
+
+fn find_language(
+    lang_id: &str,
+    processors: &Path,
+) -> Result<(std::path::PathBuf, LanguageDesc), BuildError> {
+    if !processors.exists() {
+        return Err(BuildError::SpecNotFound(processors.into()));
+    }
+    sleigh_compile::ldef::find_language(processors, lang_id).map_err(|e| match e {
+        sleigh_compile::ldef::Error::LanguageNotFound(id) => BuildError::LanguageNotFound(id),
+        e => BuildError::SpecCompileError(e.to_string()),
+    })
+}
+
+fn compile_language(
+    ldef_path: std::path::PathBuf,
+    lang_id: &str,
+    arch: target_lexicon::Architecture,
+) -> Result<SleighLanguage, BuildError> {
+    let mut builder = sleigh_compile::SleighLanguageBuilder::new(ldef_path, lang_id);
+    if matches!(arch, target_lexicon::Architecture::Msp430) {
         builder = builder.define("SPLITFLAGS");
     }
 
     // @todo: use compiler specific variants for cspec when available.
     builder.build().map_err(|e| BuildError::SpecCompileError(e.to_string()))
+}
+
+/// Infer a target triple for a SLEIGH language. Architecture specific behaviour in the emulator is
+/// keyed on the target triple, so this allows languages to make use of it.
+///
+/// Returns `None` if there is no equivalent `target_lexicon` architecture for the language.
+fn triple_for_language(lang: &LanguageDesc) -> Option<target_lexicon::Triple> {
+    use sleigh_compile::ldef::Endianness;
+    use target_lexicon::{
+        Aarch64Architecture, Architecture, ArmArchitecture, Mips32Architecture, Mips64Architecture,
+        Riscv32Architecture, Riscv64Architecture, X86_32Architecture,
+    };
+
+    let big_endian = lang.endian == Endianness::Big;
+    let variant = lang.variant.as_str();
+
+    let architecture = match (lang.processor.as_str(), lang.size) {
+        ("ARM", _) => Architecture::Arm(match (big_endian, variant) {
+            // Languages that start in thumb mode.
+            (false, "v8T" | "Cortex") => ArmArchitecture::Thumbv7em,
+            (false, "v8-m") => ArmArchitecture::Thumbv8mMain,
+            (true, "v8T" | "Cortex" | "v8-m") => ArmArchitecture::Thumbeb,
+
+            (false, "v4") => ArmArchitecture::Armv4,
+            (false, "v4t") => ArmArchitecture::Armv4t,
+            (false, "v5" | "v5t") => ArmArchitecture::Armv5te,
+            (false, "v6") => ArmArchitecture::Armv6,
+            (false, "v7") => ArmArchitecture::Armv7,
+            (false, _) => ArmArchitecture::Armv8,
+            (true, "v7") => ArmArchitecture::Armebv7r,
+            (true, _) => ArmArchitecture::Armeb,
+        }),
+        ("AARCH64", _) => Architecture::Aarch64(match big_endian {
+            false => Aarch64Architecture::Aarch64,
+            true => Aarch64Architecture::Aarch64be,
+        }),
+        ("68000", _) => Architecture::M68k,
+        ("MIPS", 32) => Architecture::Mips32(match (big_endian, variant) {
+            (false, "R6") => Mips32Architecture::Mipsisa32r6el,
+            (true, "R6") => Mips32Architecture::Mipsisa32r6,
+            (false, _) => Mips32Architecture::Mipsel,
+            (true, _) => Mips32Architecture::Mips,
+        }),
+        ("MIPS", 64) => Architecture::Mips64(match (big_endian, variant) {
+            (false, "R6") => Mips64Architecture::Mipsisa64r6el,
+            (true, "R6") => Mips64Architecture::Mipsisa64r6,
+            (false, _) => Mips64Architecture::Mips64el,
+            (true, _) => Mips64Architecture::Mips64,
+        }),
+        ("TI_MSP430" | "TI_MSP430X", _) => Architecture::Msp430,
+        ("PowerPC", 32) => Architecture::Powerpc,
+        ("PowerPC", 64) => match big_endian {
+            false => Architecture::Powerpc64le,
+            true => Architecture::Powerpc64,
+        },
+        ("RISCV", 32) => Architecture::Riscv32(Riscv32Architecture::Riscv32),
+        ("RISCV", 64) => Architecture::Riscv64(Riscv64Architecture::Riscv64),
+        ("x86", 16 | 32) => Architecture::X86_32(X86_32Architecture::I686),
+        ("x86", 64) => Architecture::X86_64,
+        ("Xtensa", _) => Architecture::XTensa,
+        ("Sparc", 32) => Architecture::Sparc,
+        ("Sparc", 64) => Architecture::Sparcv9,
+        ("eBPF", _) => match big_endian {
+            false => Architecture::Bpfel,
+            true => Architecture::Bpfeb,
+        },
+        ("AVR8", _) => Architecture::Avr,
+        ("Hexagon", _) => Architecture::Hexagon,
+        ("Loongarch", 64) => Architecture::LoongArch64,
+        _ => return None,
+    };
+
+    let triple = target_lexicon::Triple { architecture, ..target_lexicon::Triple::unknown() };
+
+    // Avoid using a triple with an endianness that differs from the language (e.g. for
+    // `PowerPC:LE:32:default`, since `target_lexicon` only supports big endian 32-bit PowerPC).
+    let triple_big_endian = triple.endianness().ok()? == target_lexicon::Endianness::Big;
+    (triple_big_endian == big_endian).then_some(triple)
 }
 
 fn get_default_processors_path() -> std::path::PathBuf {

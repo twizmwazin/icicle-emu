@@ -142,3 +142,50 @@ fn build_riscv64() {
 fn build_x86_64() {
     let _ = crate::build(&Config::from_target_triple("x86_64-none")).unwrap();
 }
+
+#[test]
+fn build_from_language_id() {
+    use target_lexicon::Architecture;
+
+    let vm = crate::build(&Config::from_language_id("ARM:LE:32:v8T")).unwrap();
+    assert!(matches!(vm.cpu.arch.triple.architecture, Architecture::Arm(arm) if arm.is_thumb()));
+
+    let vm = crate::build(&Config::from_language_id("MIPS:BE:32:default")).unwrap();
+    assert_eq!(vm.cpu.arch.triple.architecture, "mips".parse().unwrap());
+
+    // An explicitly configured target triple should be preferred over the inferred one.
+    let vm = crate::build(&Config {
+        triple: "x86_64-linux".parse().unwrap(),
+        ..Config::from_language_id("x86:LE:64:default")
+    })
+    .unwrap();
+    assert_eq!(vm.cpu.arch.triple.operating_system, target_lexicon::OperatingSystem::Linux);
+}
+
+#[test]
+fn build_from_unknown_language_id() {
+    assert!(matches!(
+        crate::build(&Config::from_language_id("NOT_A_LANGUAGE:LE:32:default")),
+        Err(crate::BuildError::LanguageNotFound(_))
+    ));
+}
+
+#[test]
+fn execute_language_without_target_triple() {
+    // There is no `target_lexicon` architecture for this language, so the emulator must rely on the
+    // SLEIGH specification.
+    let mut vm = crate::build(&Config::from_language_id("SuperH:BE:32:SH-2")).unwrap();
+    assert_eq!(vm.cpu.arch.triple.architecture, target_lexicon::Architecture::Unknown);
+    vm.cpu.mem.map_memory_len(0x1000, 0x100, Mapping { perm: perm::READ | perm::EXEC, value: 0 });
+
+    static CODE: &[u8] = &[
+        0xE0, 0x42, // mov #0x42, r0
+        0x00, 0x09, // nop
+    ];
+    vm.cpu.mem.write_bytes(0x1000, CODE, perm::NONE).unwrap();
+
+    vm.cpu.write_pc(0x1000);
+    assert_eq!(vm.step(2), VmExit::InstructionLimit);
+    assert_eq!(vm.cpu.read_pc(), 0x1004);
+    assert_eq!(vm.cpu.read_reg(vm.cpu.arch.sleigh.get_varnode("r0").unwrap()), 0x42);
+}

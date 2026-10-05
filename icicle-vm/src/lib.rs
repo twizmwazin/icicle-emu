@@ -14,7 +14,7 @@ pub use icicle_cpu::VmExit;
 pub use icicle_linux as linux;
 
 pub use crate::{
-    builder::{BuildError, build, build_with_path, sleigh_init, x86},
+    builder::{BuildError, build, build_with_path, sleigh_init, sleigh_init_for_language, x86},
     injector::{CodeInjector, InjectorRef},
 };
 pub use icicle_cpu::BlockTable;

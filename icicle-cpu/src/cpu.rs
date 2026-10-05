@@ -202,9 +202,15 @@ impl Arch {
         let mut buf = [0; 8];
         buf[..size].copy_from_slice(&bytes[..size]);
 
-        match self.triple.endianness().unwrap() {
-            target_lexicon::Endianness::Little => u64::from_le_bytes(buf),
-            target_lexicon::Endianness::Big => u64::from_be_bytes(buf),
+        // Fallback to the endianness of the SLEIGH specification for architectures unknown to
+        // `target_lexicon` (e.g., when the emulator is built from a SLEIGH language id).
+        let big_endian = match self.triple.endianness() {
+            Ok(endian) => endian == target_lexicon::Endianness::Big,
+            Err(_) => self.sleigh.big_endian,
+        };
+        match big_endian {
+            false => u64::from_le_bytes(buf),
+            true => u64::from_be_bytes(buf),
         }
     }
 }

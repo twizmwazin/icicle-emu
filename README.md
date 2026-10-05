@@ -80,6 +80,8 @@ pcode = { git = "https://github.com/icicle-emu/icicle-emu" }
 fn main() {
     // Setup the CPU state for the target triple
     let mut cpu_config = icicle_vm::cpu::Config::from_target_triple("x86_64-none");
+    // Alternatively, select the SLEIGH language directly using its Ghidra language id:
+    // let mut cpu_config = icicle_vm::cpu::Config::from_language_id("x86:LE:64:default");
     let mut vm = icicle_vm::build(&cpu_config).unwrap();
 
     // Setup an environment to run inside of.

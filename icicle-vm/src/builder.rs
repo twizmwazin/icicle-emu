@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use icicle_cpu::{Arch, Config, Cpu, arch::CallCov, exec::helpers, lifter};
-use sleigh_compile::ldef::{LanguageDesc, SleighLanguage};
+use sleigh_compile::ldef::{LanguageDef, LanguageDesc, SleighLanguage};
 
 use crate::Vm;
 
@@ -411,21 +411,41 @@ pub fn sleigh_init_for_language_with_path(
     compile_language(ldef_path, lang_id, arch)
 }
 
-fn find_language(
-    lang_id: &str,
-    processors: &Path,
-) -> Result<(std::path::PathBuf, LanguageDesc), BuildError> {
-    if !processors.exists() {
-        return Err(BuildError::SpecNotFound(processors.into()));
+/// Find the language with an id that exactly matches `lang_id` (e.g. `ARM:LE:32:v8`) by searching
+/// all language definitions in `processors/<processor>/data/languages/*.ldefs`.
+fn find_language(lang_id: &str, processors: &Path) -> Result<(PathBuf, LanguageDesc), BuildError> {
+    let read_dir = |path: &Path| -> Result<Vec<PathBuf>, BuildError> {
+        let mut entries: Vec<_> = std::fs::read_dir(path)
+            .map_err(|_| BuildError::SpecNotFound(path.into()))?
+            .filter_map(|entry| Some(entry.ok()?.path()))
+            .collect();
+        // Sort entries to ensure that the search order is deterministic.
+        entries.sort();
+        Ok(entries)
+    };
+
+    for processor in read_dir(processors)? {
+        let languages = processor.join("data/languages");
+        if !languages.is_dir() {
+            continue;
+        }
+        for ldef_path in read_dir(&languages)? {
+            if ldef_path.extension().is_none_or(|ext| ext != "ldefs") {
+                continue;
+            }
+            let ldef = LanguageDef::from_xml(&ldef_path)
+                .map_err(|e| BuildError::SpecCompileError(e.to_string()))?;
+            if let Some(lang) = ldef.language.into_iter().find(|lang| lang.id == lang_id) {
+                return Ok((ldef_path, lang));
+            }
+        }
     }
-    sleigh_compile::ldef::find_language(processors, lang_id).map_err(|e| match e {
-        sleigh_compile::ldef::Error::LanguageNotFound(id) => BuildError::LanguageNotFound(id),
-        e => BuildError::SpecCompileError(e.to_string()),
-    })
+
+    Err(BuildError::LanguageNotFound(lang_id.into()))
 }
 
 fn compile_language(
-    ldef_path: std::path::PathBuf,
+    ldef_path: PathBuf,
     lang_id: &str,
     arch: target_lexicon::Architecture,
 ) -> Result<SleighLanguage, BuildError> {

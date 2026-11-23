@@ -47,10 +47,7 @@ fn start(target: &str, args: &[String]) -> anyhow::Result<()> {
         };
 
         info!("New client connection: {:?}", stream);
-        let mut vm = icicle_vm::build(&icicle_vm::cpu::Config {
-            triple: target.clone(),
-            ..Default::default()
-        })?;
+        let mut vm = icicle_vm::build(&icicle_vm::cpu::Config::from_triple(target.clone()))?;
         vm.env = icicle_vm::env::build_auto(&mut vm)?;
 
         if let Some(env) = vm.env_mut::<icicle_vm::linux::Kernel>() {

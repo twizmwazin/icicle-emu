@@ -45,21 +45,20 @@ pub fn build(config: &Config) -> Result<Vm, BuildError> {
 }
 
 pub fn build_with_path(config: &Config, processors: &Path) -> Result<Vm, BuildError> {
-    let (triple, mut lang) = match config.language_id.as_deref() {
-        Some(lang_id) => {
-            let (ldef_path, desc) = find_language(lang_id, processors)?;
-            // Prefer the user provided triple, otherwise infer it from the language.
-            let triple = match config.triple.architecture {
-                target_lexicon::Architecture::Unknown => {
-                    triple_for_language(&desc).unwrap_or_else(target_lexicon::Triple::unknown)
-                }
-                _ => config.triple.clone(),
-            };
-            let lang = compile_language(ldef_path, lang_id, triple.architecture)?;
-            (triple, lang)
+    if config.language_id.is_empty() {
+        // No language was configured (e.g. there is no default language for the target triple).
+        return Err(BuildError::UnsupportedArchitecture);
+    }
+
+    let (ldef_path, desc) = find_language(&config.language_id, processors)?;
+    // Prefer the user provided triple, otherwise infer it from the language.
+    let triple = match config.triple.architecture {
+        target_lexicon::Architecture::Unknown => {
+            triple_for_language(&desc).unwrap_or_else(target_lexicon::Triple::unknown)
         }
-        None => (config.triple.clone(), sleigh_init_with_path(&config.triple, processors)?),
+        _ => config.triple.clone(),
     };
+    let mut lang = compile_language(ldef_path, &config.language_id, triple.architecture)?;
 
     let reg_next_pc = lang
         .sleigh
@@ -262,6 +261,7 @@ fn get_boot_action(arch: target_lexicon::Architecture) -> fn(&mut Cpu, u64) {
     }
 }
 
+/// Compile the default SLEIGH specification for `target`.
 pub fn sleigh_init(target: &target_lexicon::Triple) -> Result<SleighLanguage, BuildError> {
     sleigh_init_with_path(target, &get_default_processors_path())
 }
@@ -270,130 +270,10 @@ pub fn sleigh_init_with_path(
     target: &target_lexicon::Triple,
     processors: &Path,
 ) -> Result<SleighLanguage, BuildError> {
-    use target_lexicon::{
-        Aarch64Architecture, Architecture, ArmArchitecture, Mips32Architecture,
-        Riscv32Architecture, Riscv64Architecture,
-    };
-
-    let (ldef, id) = match target.architecture {
-        Architecture::Arm(variant) => {
-            let ldef = "ARM/data/languages/ARM.ldefs";
-            let id = match variant {
-                ArmArchitecture::Arm => "ARM:LE:32:v8",
-                ArmArchitecture::Armeb => "ARM:BE:32:v8",
-
-                ArmArchitecture::Armv4 => "ARM:LE:32:v4",
-                ArmArchitecture::Armv4t => "ARM:LE:32:v4t",
-                ArmArchitecture::Armv5t | ArmArchitecture::Armv5te | ArmArchitecture::Armv5tej => {
-                    "ARM:LE:32:v5t"
-                }
-                ArmArchitecture::Armv6
-                | ArmArchitecture::Armv6j
-                | ArmArchitecture::Armv6k
-                | ArmArchitecture::Armv6z
-                | ArmArchitecture::Armv6kz
-                | ArmArchitecture::Armv6t2
-                | ArmArchitecture::Armv6m => "ARM:LE:32:v6",
-
-                ArmArchitecture::Armv7
-                | ArmArchitecture::Armv7a
-                | ArmArchitecture::Armv7k
-                | ArmArchitecture::Armv7ve
-                | ArmArchitecture::Armv7m
-                | ArmArchitecture::Armv7r
-                | ArmArchitecture::Armv7s => "ARM:LE:32:v7",
-
-                ArmArchitecture::Armebv7r => "ARM:BE:32:v7",
-
-                ArmArchitecture::Armv8
-                | ArmArchitecture::Armv8a
-                | ArmArchitecture::Armv8_1a
-                | ArmArchitecture::Armv8_2a
-                | ArmArchitecture::Armv8_3a
-                | ArmArchitecture::Armv8_4a
-                | ArmArchitecture::Armv8_5a
-                | ArmArchitecture::Armv8mBase
-                | ArmArchitecture::Armv8mMain
-                | ArmArchitecture::Armv8r => "ARM:LE:32:v8",
-
-                ArmArchitecture::Thumbv4t => "ARM:LE:32:v8T",
-                ArmArchitecture::Thumbv5te => "ARM:LE:32:v8T",
-                ArmArchitecture::Thumbv6m => "ARM:LE:32:v8T",
-
-                // No specific v7 thumb target
-                ArmArchitecture::Thumbv7a
-                | ArmArchitecture::Thumbv7em
-                | ArmArchitecture::Thumbv7m
-                | ArmArchitecture::Thumbv7neon => "ARM:LE:32:v8T",
-
-                ArmArchitecture::Thumbv8mBase | ArmArchitecture::Thumbv8mMain => "ARM:LE:32:v8T",
-
-                ArmArchitecture::Thumbeb => "ARM:BE:32:v8T",
-                _ => return Err(BuildError::UnsupportedArchitecture),
-            };
-            (ldef, id)
-        }
-        Architecture::Aarch64(variant) => {
-            let ldef = "AARCH64/data/languages/AARCH64.ldefs";
-            let id = match variant {
-                Aarch64Architecture::Aarch64 => "AARCH64:LE:64:v8A",
-                Aarch64Architecture::Aarch64be => "AARCH64:BE:64:v8A",
-                _ => return Err(BuildError::UnsupportedArchitecture),
-            };
-            (ldef, id)
-        }
-        Architecture::M68k => ("68000/data/languages/68000.ldefs", "68000:BE:32:Coldfire"),
-        Architecture::Mips32(variant) => {
-            let ldef = "MIPS/data/languages/mips.ldefs";
-            let id = match variant {
-                Mips32Architecture::Mips => "MIPS:BE:32:default",
-                Mips32Architecture::Mipsel => "MIPS:LE:32:default",
-                Mips32Architecture::Mipsisa32r6 => "MIPS:BE:32:R6",
-                Mips32Architecture::Mipsisa32r6el => "MIPS:LE:32:R6",
-                _ => return Err(BuildError::UnsupportedArchitecture),
-            };
-            (ldef, id)
-        }
-        Architecture::Msp430 => {
-            ("TI_MSP430/data/languages/TI_MSP430.ldefs", "TI_MSP430X:LE:32:default")
-        }
-        Architecture::Powerpc => ("PowerPC/data/languages/ppc.ldefs", "PowerPC:BE:32:default"),
-        Architecture::Powerpc64 => ("PowerPC/data/languages/ppc.ldefs", "PowerPC:BE:64:default"),
-        Architecture::Powerpc64le => ("PowerPC/data/languages/ppc.ldefs", "PowerPC:LE:64:default"),
-        Architecture::Riscv32(variant) => {
-            let ldef = "RISCV/data/languages/riscv.ldefs";
-            let id = match variant {
-                Riscv32Architecture::Riscv32 => "RISCV:LE:32:default",
-                Riscv32Architecture::Riscv32gc => "RISCV:LE:32:RV32GC",
-                Riscv32Architecture::Riscv32i => "RISCV:LE:32:RV32I",
-                Riscv32Architecture::Riscv32imc => "RISCV:LE:32:RV32IMC",
-                _ => return Err(BuildError::UnsupportedArchitecture),
-            };
-            (ldef, id)
-        }
-        Architecture::Riscv64(variant) => {
-            let ldef = "RISCV/data/languages/riscv.ldefs";
-            let id = match variant {
-                Riscv64Architecture::Riscv64 => "RISCV:LE:64:default",
-                Riscv64Architecture::Riscv64gc => "RISCV:LE:64:RV64GC",
-                _ => return Err(BuildError::UnsupportedArchitecture),
-            };
-            (ldef, id)
-        }
-        Architecture::X86_32(_) => ("x86/data/languages/x86.ldefs", "x86:LE:32:default"),
-        Architecture::X86_64h | Architecture::X86_64 => {
-            ("x86/data/languages/x86.ldefs", "x86:LE:64:default")
-        }
-        Architecture::XTensa => ("xtensa/data/languages/xtensa.ldefs", "Xtensa:LE:32:default"),
-        _ => return Err(BuildError::UnsupportedArchitecture),
-    };
-
-    let ldef_path = processors.join(ldef);
-    if !ldef_path.exists() {
-        return Err(BuildError::SpecNotFound(ldef_path));
-    }
-
-    compile_language(ldef_path, id, target.architecture)
+    let lang_id =
+        icicle_cpu::language_id_for_triple(target).ok_or(BuildError::UnsupportedArchitecture)?;
+    let (ldef_path, _) = find_language(lang_id, processors)?;
+    compile_language(ldef_path, lang_id, target.architecture)
 }
 
 /// Compile the SLEIGH specification for the language with the id `lang_id` (e.g. `ARM:LE:32:v8`).
@@ -424,6 +304,10 @@ fn find_language(lang_id: &str, processors: &Path) -> Result<(PathBuf, LanguageD
         Ok(entries)
     };
 
+    // A language definition that fails to parse should not prevent languages defined elsewhere from
+    // being used, so we keep searching and only report the error if the language is not found.
+    let mut parse_error = None;
+
     for processor in read_dir(processors)? {
         let languages = processor.join("data/languages");
         if !languages.is_dir() {
@@ -433,15 +317,20 @@ fn find_language(lang_id: &str, processors: &Path) -> Result<(PathBuf, LanguageD
             if ldef_path.extension().is_none_or(|ext| ext != "ldefs") {
                 continue;
             }
-            let ldef = LanguageDef::from_xml(&ldef_path)
-                .map_err(|e| BuildError::SpecCompileError(e.to_string()))?;
+            let ldef = match LanguageDef::from_xml(&ldef_path) {
+                Ok(ldef) => ldef,
+                Err(err) => {
+                    parse_error.get_or_insert(BuildError::SpecCompileError(err.to_string()));
+                    continue;
+                }
+            };
             if let Some(lang) = ldef.language.into_iter().find(|lang| lang.id == lang_id) {
                 return Ok((ldef_path, lang));
             }
         }
     }
 
-    Err(BuildError::LanguageNotFound(lang_id.into()))
+    Err(parse_error.unwrap_or_else(|| BuildError::LanguageNotFound(lang_id.into())))
 }
 
 fn compile_language(

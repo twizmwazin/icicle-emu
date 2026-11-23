@@ -141,12 +141,11 @@ fn configure_and_run(
 
     let disable_jit = std::env::var("ICICLE_DISABLE_JIT").is_ok();
     let cpu_config = icicle_vm::cpu::Config {
-        triple,
         enable_jit: !disable_jit,
         optimize_instructions: config.optimize,
         optimize_block: config.optimize,
         shadow_stack: icicle_vm::cpu::ShadowStackState::Disabled,
-        ..Default::default()
+        ..icicle_vm::cpu::Config::from_triple(triple)
     };
 
     let mut vm = icicle_vm::build(&cpu_config)

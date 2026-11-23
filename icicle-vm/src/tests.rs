@@ -6,10 +6,9 @@ use icicle_cpu::{
 #[test]
 fn branch_exception_delivery_on_single_step() {
     let mut vm = crate::build(&Config {
-        triple: "riscv64-none".parse().unwrap(),
         enable_jit: false,
         shadow_stack: ShadowStackState::Disabled,
-        ..Config::default()
+        ..Config::from_target_triple("riscv64-none")
     })
     .unwrap();
     vm.cpu.mem.map_memory_len(0x1000, 0x100, Mapping { perm: perm::READ | perm::EXEC, value: 0 });
@@ -39,9 +38,7 @@ fn branch_exception_delivery_on_single_step() {
 
 #[test]
 fn prioritize_instruction_limit_over_decode_error() {
-    let mut vm =
-        crate::build(&Config { triple: "riscv64-none".parse().unwrap(), ..Config::default() })
-            .unwrap();
+    let mut vm = crate::build(&Config::from_target_triple("riscv64-none")).unwrap();
     vm.cpu.mem.map_memory_len(0x1000, 0x100, Mapping { perm: perm::READ | perm::EXEC, value: 0 });
 
     // Map two nops followed by an invalid instruction.
@@ -59,9 +56,7 @@ fn prioritize_instruction_limit_over_decode_error() {
 
 #[test]
 fn execute_only_memory() {
-    let mut vm =
-        crate::build(&Config { triple: "riscv64-none".parse().unwrap(), ..Config::default() })
-            .unwrap();
+    let mut vm = crate::build(&Config::from_target_triple("riscv64-none")).unwrap();
     vm.cpu.mem.map_memory_len(0x1000, 0x100, Mapping { perm: perm::EXEC, value: 0 });
 
     // Map some code that jumps to the target location.
@@ -136,7 +131,7 @@ fn multi_step_after_fault_matches_single_steps() {
 }
 
 fn arm_test_vm() -> crate::Vm {
-    crate::build(&Config { triple: "arm".parse().unwrap(), ..Config::default() }).unwrap()
+    crate::build(&Config::from_target_triple("arm")).unwrap()
 }
 
 #[test]
@@ -322,9 +317,7 @@ fn recompile_does_not_mix_isa_modes() {
 }
 
 fn mips_test_vm(code: &[u8]) -> crate::Vm {
-    let mut vm =
-        crate::build(&Config { triple: "mips-none".parse().unwrap(), ..Config::default() })
-            .unwrap();
+    let mut vm = crate::build(&Config::from_target_triple("mips-none")).unwrap();
 
     vm.cpu.mem.map_memory_len(0x1000, 0x1000, Mapping {
         perm: perm::READ | perm::EXEC | perm::INIT,
@@ -394,9 +387,7 @@ fn mips16_to_mips32_mode_switch() {
 #[test]
 fn self_modifying_code_after_write() {
     fn run_from(start: u64) -> VmExit {
-        let mut vm =
-            crate::build(&Config { triple: "i686-none".parse().unwrap(), ..Config::default() })
-                .unwrap();
+        let mut vm = crate::build(&Config::from_target_triple("i686-none")).unwrap();
 
         let rwx = Mapping { perm: perm::READ | perm::WRITE | perm::EXEC, value: 0x90 };
 
@@ -428,9 +419,7 @@ fn self_modifying_code_after_write() {
 
 #[test]
 fn remove_breakpoint_on_jump_target() {
-    let mut vm =
-        crate::build(&Config { triple: "x86_64-none".parse().unwrap(), ..Config::default() })
-            .unwrap();
+    let mut vm = crate::build(&Config::from_target_triple("x86_64-none")).unwrap();
     vm.cpu.mem.map_memory_len(0, 0x1000, Mapping { perm: perm::READ | perm::EXEC, value: 0 });
 
     const CODE: &[u8] = &[
@@ -447,9 +436,7 @@ fn remove_breakpoint_on_jump_target() {
 
 #[test]
 fn remove_breakpoint_skips_another() {
-    let mut vm =
-        crate::build(&Config { triple: "x86_64-none".parse().unwrap(), ..Config::default() })
-            .unwrap();
+    let mut vm = crate::build(&Config::from_target_triple("x86_64-none")).unwrap();
     vm.cpu.mem.map_memory_len(0, 0x1000, Mapping { perm: perm::READ | perm::EXEC, value: 0 });
 
     const CODE: &[u8] = &[
@@ -484,6 +471,20 @@ fn build_from_language_id() {
     })
     .unwrap();
     assert_eq!(vm.cpu.arch.triple.operating_system, target_lexicon::OperatingSystem::Linux);
+}
+
+#[test]
+fn target_triple_selects_default_language() {
+    assert_eq!(Config::from_target_triple("x86_64-linux").language_id, "x86:LE:64:default");
+    assert_eq!(Config::from_target_triple("thumbv7m-none").language_id, "ARM:LE:32:v8T");
+
+    // There is no default language for this target, so the language must be set explicitly.
+    let config = Config::from_target_triple("sparc-none");
+    assert_eq!(config.language_id, "");
+    assert!(matches!(crate::build(&config), Err(crate::BuildError::UnsupportedArchitecture)));
+
+    let vm = crate::build(&Config { language_id: "sparc:BE:32:default".into(), ..config }).unwrap();
+    assert_eq!(vm.cpu.arch.triple.architecture, target_lexicon::Architecture::Sparc);
 }
 
 #[test]

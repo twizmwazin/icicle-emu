@@ -17,7 +17,7 @@ use std::any::Any;
 use crate::debug_info::{DebugInfo, SourceLocation};
 
 pub use crate::{
-    config::Config,
+    config::{Config, language_id_for_triple},
     cpu::{
         Arch, Cpu, CpuSnapshot, Exception, RegHandler, ShadowStack, ShadowStackEntry,
         ShadowStackState,

@@ -271,7 +271,6 @@ impl FuzzConfig {
 
     pub fn cpu_config(&self) -> icicle_vm::cpu::Config {
         icicle_vm::cpu::Config {
-            triple: self.arch.clone(),
             enable_jit: !self.disable_jit,
             shadow_stack: match self.enable_shadow_stack {
                 true => icicle_vm::cpu::ShadowStackState::Enabled,
@@ -280,7 +279,7 @@ impl FuzzConfig {
             // Disable automatically recompilation, since this causes AFL to think the emulator
             // hangs.
             enable_recompilation: false,
-            ..Default::default()
+            ..icicle_vm::cpu::Config::from_triple(self.arch.clone())
         }
     }
 }

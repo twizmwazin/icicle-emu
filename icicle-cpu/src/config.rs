@@ -2,8 +2,6 @@ use crate::ShadowStackState;
 
 pub struct Config {
     pub triple: target_lexicon::Triple,
-    /// Overrides the SLEIGH language ID (e.g. `ARM:LE:32:Cortex`) that would otherwise be selected
-    /// based on `triple`. The `.ldefs` file is determined from the processor component of the ID.
     pub language_id: Option<String>,
     pub enable_jit: bool,
     pub enable_jit_mem: bool,

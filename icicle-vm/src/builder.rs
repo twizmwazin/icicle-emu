@@ -43,7 +43,8 @@ pub fn build(config: &Config) -> Result<Vm, BuildError> {
 }
 
 pub fn build_with_path(config: &Config, processors: &Path) -> Result<Vm, BuildError> {
-    let mut lang = sleigh_init_with_path(&config.triple, processors)?;
+    let mut lang =
+        sleigh_init_with_language_id(&config.triple, processors, config.language_id.as_deref())?;
 
     let reg_next_pc = lang
         .sleigh
@@ -245,6 +246,16 @@ pub fn sleigh_init_with_path(
     target: &target_lexicon::Triple,
     processors: &Path,
 ) -> Result<SleighLanguage, BuildError> {
+    sleigh_init_with_language_id(target, processors, None)
+}
+
+/// Initializes the SLEIGH language for `target`. If `language_id` is set, it is used instead of
+/// the language ID that would be selected based on the target triple.
+pub fn sleigh_init_with_language_id(
+    target: &target_lexicon::Triple,
+    processors: &Path,
+    language_id: Option<&str>,
+) -> Result<SleighLanguage, BuildError> {
     use target_lexicon::{
         Aarch64Architecture, Architecture, ArmArchitecture, Mips32Architecture,
         Riscv32Architecture, Riscv64Architecture,
@@ -362,6 +373,8 @@ pub fn sleigh_init_with_path(
         Architecture::XTensa => ("xtensa/data/languages/xtensa.ldefs", "Xtensa:LE:32:default"),
         _ => return Err(BuildError::UnsupportedArchitecture),
     };
+
+    let id = language_id.unwrap_or(id);
 
     let ldef_path = processors.join(ldef);
     if !ldef_path.exists() {

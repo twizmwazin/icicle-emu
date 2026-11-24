@@ -43,8 +43,11 @@ pub fn build(config: &Config) -> Result<Vm, BuildError> {
 }
 
 pub fn build_with_path(config: &Config, processors: &Path) -> Result<Vm, BuildError> {
-    let mut lang =
-        sleigh_init_with_language_id(&config.triple, processors, config.language_id.as_deref())?;
+    let language_id = match config.language_id.as_deref() {
+        Some(id) => id,
+        None => language_id_for_triple(&config.triple)?,
+    };
+    let mut lang = sleigh_init_with_language_id(language_id, processors)?;
 
     let reg_next_pc = lang
         .sleigh
@@ -246,24 +249,18 @@ pub fn sleigh_init_with_path(
     target: &target_lexicon::Triple,
     processors: &Path,
 ) -> Result<SleighLanguage, BuildError> {
-    sleigh_init_with_language_id(target, processors, None)
+    sleigh_init_with_language_id(language_id_for_triple(target)?, processors)
 }
 
-/// Initializes the SLEIGH language for `target`. If `language_id` is set, it is used instead of
-/// the language ID that would be selected based on the target triple.
-pub fn sleigh_init_with_language_id(
-    target: &target_lexicon::Triple,
-    processors: &Path,
-    language_id: Option<&str>,
-) -> Result<SleighLanguage, BuildError> {
+/// Returns the default SLEIGH language ID for `target`.
+pub fn language_id_for_triple(target: &target_lexicon::Triple) -> Result<&'static str, BuildError> {
     use target_lexicon::{
         Aarch64Architecture, Architecture, ArmArchitecture, Mips32Architecture,
         Riscv32Architecture, Riscv64Architecture,
     };
 
-    let (ldef, id) = match target.architecture {
+    let id = match target.architecture {
         Architecture::Arm(variant) => {
-            let ldef = "ARM/data/languages/ARM.ldefs";
             let id = match variant {
                 ArmArchitecture::Arm => "ARM:LE:32:v8",
                 ArmArchitecture::Armeb => "ARM:BE:32:v8",
@@ -317,20 +314,18 @@ pub fn sleigh_init_with_language_id(
                 ArmArchitecture::Thumbeb => "ARM:BE:32:v8T",
                 _ => return Err(BuildError::UnsupportedArchitecture),
             };
-            (ldef, id)
+            id
         }
         Architecture::Aarch64(variant) => {
-            let ldef = "AARCH64/data/languages/AARCH64.ldefs";
             let id = match variant {
                 Aarch64Architecture::Aarch64 => "AARCH64:LE:64:v8A",
                 Aarch64Architecture::Aarch64be => "AARCH64:BE:64:v8A",
                 _ => return Err(BuildError::UnsupportedArchitecture),
             };
-            (ldef, id)
+            id
         }
-        Architecture::M68k => ("68000/data/languages/68000.ldefs", "68000:BE:32:Coldfire"),
+        Architecture::M68k => "68000:BE:32:Coldfire",
         Architecture::Mips32(variant) => {
-            let ldef = "MIPS/data/languages/mips.ldefs";
             let id = match variant {
                 Mips32Architecture::Mips => "MIPS:BE:32:default",
                 Mips32Architecture::Mipsel => "MIPS:LE:32:default",
@@ -338,16 +333,13 @@ pub fn sleigh_init_with_language_id(
                 Mips32Architecture::Mipsisa32r6el => "MIPS:LE:32:R6",
                 _ => return Err(BuildError::UnsupportedArchitecture),
             };
-            (ldef, id)
+            id
         }
-        Architecture::Msp430 => {
-            ("TI_MSP430/data/languages/TI_MSP430.ldefs", "TI_MSP430X:LE:32:default")
-        }
-        Architecture::Powerpc => ("PowerPC/data/languages/ppc.ldefs", "PowerPC:BE:32:default"),
-        Architecture::Powerpc64 => ("PowerPC/data/languages/ppc.ldefs", "PowerPC:BE:64:default"),
-        Architecture::Powerpc64le => ("PowerPC/data/languages/ppc.ldefs", "PowerPC:LE:64:default"),
+        Architecture::Msp430 => "TI_MSP430X:LE:32:default",
+        Architecture::Powerpc => "PowerPC:BE:32:default",
+        Architecture::Powerpc64 => "PowerPC:BE:64:default",
+        Architecture::Powerpc64le => "PowerPC:LE:64:default",
         Architecture::Riscv32(variant) => {
-            let ldef = "RISCV/data/languages/riscv.ldefs";
             let id = match variant {
                 Riscv32Architecture::Riscv32 => "RISCV:LE:32:default",
                 Riscv32Architecture::Riscv32gc => "RISCV:LE:32:RV32GC",
@@ -355,34 +347,51 @@ pub fn sleigh_init_with_language_id(
                 Riscv32Architecture::Riscv32imc => "RISCV:LE:32:RV32IMC",
                 _ => return Err(BuildError::UnsupportedArchitecture),
             };
-            (ldef, id)
+            id
         }
         Architecture::Riscv64(variant) => {
-            let ldef = "RISCV/data/languages/riscv.ldefs";
             let id = match variant {
                 Riscv64Architecture::Riscv64 => "RISCV:LE:64:default",
                 Riscv64Architecture::Riscv64gc => "RISCV:LE:64:RV64GC",
                 _ => return Err(BuildError::UnsupportedArchitecture),
             };
-            (ldef, id)
+            id
         }
-        Architecture::X86_32(_) => ("x86/data/languages/x86.ldefs", "x86:LE:32:default"),
-        Architecture::X86_64h | Architecture::X86_64 => {
-            ("x86/data/languages/x86.ldefs", "x86:LE:64:default")
-        }
-        Architecture::XTensa => ("xtensa/data/languages/xtensa.ldefs", "Xtensa:LE:32:default"),
+        Architecture::X86_32(_) => "x86:LE:32:default",
+        Architecture::X86_64h | Architecture::X86_64 => "x86:LE:64:default",
+        Architecture::XTensa => "Xtensa:LE:32:default",
         _ => return Err(BuildError::UnsupportedArchitecture),
     };
+    Ok(id)
+}
 
-    let id = language_id.unwrap_or(id);
+/// Initializes the SLEIGH language with ID `language_id` (e.g. `ARM:LE:32:Cortex`). The `.ldefs`
+/// file to load is determined from the processor component of the ID.
+pub fn sleigh_init_with_language_id(
+    language_id: &str,
+    processors: &Path,
+) -> Result<SleighLanguage, BuildError> {
+    let processor = language_id.split(':').next().unwrap_or(language_id);
+    let ldef = match processor {
+        "ARM" => "ARM/data/languages/ARM.ldefs",
+        "AARCH64" => "AARCH64/data/languages/AARCH64.ldefs",
+        "68000" => "68000/data/languages/68000.ldefs",
+        "MIPS" => "MIPS/data/languages/mips.ldefs",
+        "TI_MSP430" | "TI_MSP430X" => "TI_MSP430/data/languages/TI_MSP430.ldefs",
+        "PowerPC" => "PowerPC/data/languages/ppc.ldefs",
+        "RISCV" => "RISCV/data/languages/riscv.ldefs",
+        "x86" => "x86/data/languages/x86.ldefs",
+        "Xtensa" => "xtensa/data/languages/xtensa.ldefs",
+        _ => return Err(BuildError::UnsupportedArchitecture),
+    };
 
     let ldef_path = processors.join(ldef);
     if !ldef_path.exists() {
         return Err(BuildError::SpecNotFound(ldef_path));
     }
 
-    let mut builder = sleigh_compile::SleighLanguageBuilder::new(ldef_path, id);
-    if matches!(target.architecture, Architecture::Msp430) {
+    let mut builder = sleigh_compile::SleighLanguageBuilder::new(ldef_path, language_id);
+    if matches!(processor, "TI_MSP430" | "TI_MSP430X") {
         builder = builder.define("SPLITFLAGS");
     }
 
